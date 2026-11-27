@@ -1,0 +1,63 @@
+name: RouteGuard iOS CI (Xcode + Simulator)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-test-ios:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Resolve available iPhone Simulator
+        id: sim
+        run: |
+          SIM_ID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; devs=[x for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if 'iPhone' in x['name']]; print(devs[0]['udid'])")
+          echo "SIM_ID=$SIM_ID" >> $GITHUB_OUTPUT
+          echo "Using simulator UDID: $SIM_ID"
+
+      - name: Run XCTest & XCUITest (with Simulator Screenshots)
+        run: |
+          xcodebuild test \
+            -project RouteGuard.xcodeproj \
+            -scheme RouteGuard \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.SIM_ID }}" \
+            -resultBundlePath TestResults.xcresult
+
+      - name: Build Simulator App Artifact
+        run: |
+          xcodebuild build \
+            -project RouteGuard.xcodeproj \
+            -scheme RouteGuard \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -derivedDataPath DerivedData
+
+      - name: Export Simulator Screenshots & .app
+        if: always()
+        run: |
+          mkdir -p artifacts/screenshots
+          find DerivedData -name "RouteGuard.app" -exec cp -R {} artifacts/ \; || true
+          cp -R TestResults.xcresult artifacts/ || true
+          find ~/Library/Developer -name "*.png" -exec cp {} artifacts/screenshots/ \; || true
+
+      - name: Upload iOS Simulator Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: routeguard-ios-simulator-build
+          path: artifacts/
