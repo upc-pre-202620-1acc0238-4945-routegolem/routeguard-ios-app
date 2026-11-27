@@ -44,7 +44,7 @@ struct UserAccountDto: Codable {
     }
 }
 
-struct LiveTripTelemetryDto: Codable {
+struct LiveTripTelemetryDto: Decodable {
     let tripId: String
     let routeName: String
     let driverName: String
@@ -175,7 +175,7 @@ struct SupportTicketItem: Identifiable, Codable {
     let createdAt: String
 }
 
-struct TripHistoryItem: Identifiable, Codable {
+struct TripHistoryItem: Identifiable, Decodable {
     var id: String { tripId }
     let tripId: String
     let routeName: String
@@ -358,7 +358,7 @@ struct DriverPassengerItem: Identifiable {
     var status: BoardingState
 }
 
-struct PlanItem: Identifiable, Codable {
+struct PlanItem: Identifiable, Decodable {
     let id: String
     let name: String
     let pricePen: Double
