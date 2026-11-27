@@ -1,5 +1,89 @@
 import Foundation
+import MapKit
 import SwiftData
+
+@MainActor
+enum RoadRoutingHelper {
+    private static var cache: [String: [CLLocationCoordinate2D]] = [:]
+
+    static func fetchRoadCoordinates(for waypoints: [CLLocationCoordinate2D]) async -> [CLLocationCoordinate2D] {
+        var cleaned: [CLLocationCoordinate2D] = []
+        for pt in waypoints {
+            if let last = cleaned.last {
+                if abs(last.latitude - pt.latitude) < 0.00001 && abs(last.longitude - pt.longitude) < 0.00001 {
+                    continue
+                }
+            }
+            cleaned.append(pt)
+        }
+        guard cleaned.count >= 2 else { return cleaned }
+
+        let key = cleaned.map { String(format: "%.5f,%.5f", $0.latitude, $0.longitude) }.joined(separator: ";")
+        if let hit = cache[key] { return hit }
+
+        // Primary: native Apple MapKit MKDirections chained between consecutive stops
+        var stitched: [CLLocationCoordinate2D] = []
+        var usedDirections = true
+        for i in 0..<(cleaned.count - 1) {
+            let src = MKPlacemark(coordinate: cleaned[i])
+            let dst = MKPlacemark(coordinate: cleaned[i + 1])
+            let request = MKDirections.Request()
+            request.source = MKMapItem(placemark: src)
+            request.destination = MKMapItem(placemark: dst)
+            request.transportType = .automobile
+
+            do {
+                let response = try await MKDirections(request: request).calculate()
+                if let route = response.routes.first, route.polyline.pointCount >= 2 {
+                    let count = route.polyline.pointCount
+                    var coords = Array(repeating: CLLocationCoordinate2D(), count: count)
+                    route.polyline.getCoordinates(&coords, range: NSRange(location: 0, length: count))
+                    if !stitched.isEmpty && !coords.isEmpty {
+                        coords.removeFirst()
+                    }
+                    stitched.append(contentsOf: coords)
+                } else {
+                    usedDirections = false
+                    break
+                }
+            } catch {
+                usedDirections = false
+                break
+            }
+        }
+        if usedDirections && stitched.count >= 2 {
+            cache[key] = stitched
+            return stitched
+        }
+
+        // Secondary: OSRM driving router fallback
+        let osrmCoords = cleaned.map { "\($0.longitude),\($0.latitude)" }.joined(separator: ";")
+        if let url = URL(string: "https://router.project-osrm.org/route/v1/driving/\(osrmCoords)?overview=full&geometries=geojson") {
+            do {
+                var req = URLRequest(url: url)
+                req.timeoutInterval = 6.0
+                let (data, res) = try await URLSession.shared.data(for: req)
+                if let http = res as? HTTPURLResponse, http.statusCode == 200,
+                   let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let routes = json["routes"] as? [[String: Any]],
+                   let first = routes.first,
+                   let geometry = first["geometry"] as? [String: Any],
+                   let coords = geometry["coordinates"] as? [[Double]] {
+                    let path = coords.compactMap { pair -> CLLocationCoordinate2D? in
+                        guard pair.count >= 2 else { return nil }
+                        return CLLocationCoordinate2D(latitude: pair[1], longitude: pair[0])
+                    }
+                    if path.count >= 2 {
+                        cache[key] = path
+                        return path
+                    }
+                }
+            } catch {}
+        }
+
+        return cleaned
+    }
+}
 
 @MainActor
 final class RouteGuardRepository {
@@ -25,15 +109,26 @@ final class RouteGuardRepository {
         self.store = sessionStore ?? .shared
     }
 
-    private func makeRequest(path: String, method: String = "GET", body: [String: Any]? = nil, includeAuth: Bool = true) -> URLRequest? {
+    private func isLiveToken(_ token: String? = nil) -> Bool {
+        let t = token ?? store.token
+        return !t.isEmpty &&
+            !t.hasPrefix("offline_ios_token_") &&
+            !t.hasPrefix("ios_local_") &&
+            !t.hasPrefix("mock_") &&
+            !t.hasPrefix("mock-") &&
+            !t.hasPrefix("demo-")
+    }
+
+    private func makeRequest(path: String, method: String = "GET", body: [String: Any]? = nil, includeAuth: Bool = true, authToken: String? = nil) -> URLRequest? {
         guard let url = URL(string: "\(ApiConstants.baseUrl)\(path)") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue(AppStrings.shared.currentLanguage.rawValue, forHTTPHeaderField: "Accept-Language")
-        if includeAuth, !store.token.isEmpty {
-            req.setValue("Bearer \(store.token)", forHTTPHeaderField: "Authorization")
+        let tok = authToken ?? store.token
+        if includeAuth, !tok.isEmpty {
+            req.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
         }
         if let body {
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -58,9 +153,15 @@ final class RouteGuardRepository {
                 let (data, response) = try await session.data(for: req)
                 if let http = response as? HTTPURLResponse {
                     if (200...299).contains(http.statusCode) {
-                        let account = try JSONDecoder().decode(UserAccountDto.self, from: data)
+                        var account = try JSONDecoder().decode(UserAccountDto.self, from: data)
                         if let photo = account.photoData {
                             saveAvatarLocally(userId: account.id, photoData: photo, pendingSync: false)
+                        }
+                        if isLiveToken(account.token) {
+                            let roleNorm = UserRole.normalize(account.role)
+                            if let pid = await resolveProfileId(role: roleNorm, userId: account.id, token: account.token) {
+                                account = account.withProfileId(pid)
+                            }
                         }
                         return account
                     }
@@ -177,17 +278,338 @@ final class RouteGuardRepository {
 
     // MARK: - Live Tracking, SOAT & History (US-06, US-12, US-15, US-09, US-14, US-21)
 
-    func getActiveTrip() async -> LiveTripTelemetryDto {
-        if let req = makeRequest(path: "/trips/live") {
+    func resolveProfileId(role: UserRole? = nil, userId: String? = nil, token: String? = nil) async -> String? {
+        let targetRole = role ?? store.role
+        let targetUid = userId ?? store.userId
+        let tok = token ?? store.token
+        guard isLiveToken(tok), targetRole == .parent || targetRole == .driver else { return nil }
+        let path = targetRole == .parent ? "/parents" : "/drivers"
+        guard let req = makeRequest(path: path, authToken: tok) else { return nil }
+        do {
+            let (data, res) = try await session.data(for: req)
+            guard let http = res as? HTTPURLResponse, http.statusCode == 200,
+                  let list = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                return nil
+            }
+            if !targetUid.isEmpty,
+               let matched = list.first(where: { ($0["userId"] as? String) == targetUid }),
+               let pid = matched["id"] as? String {
+                return pid
+            }
+            if list.count == 1, let pid = list.first?["id"] as? String {
+                return pid
+            }
+        } catch {}
+        return nil
+    }
+
+    func getParentActiveTrip() async -> ParentActiveTripResult {
+        guard isLiveToken() else {
+            return ParentActiveTripResult(hasActiveTrip: true, telemetry: LiveTripTelemetryDto(), isOfflineFallback: true)
+        }
+        var pid = store.profileId
+        if pid.isEmpty, let resolved = await resolveProfileId(role: .parent) {
+            pid = resolved
+            store.setProfileId(resolved)
+        }
+        guard !pid.isEmpty, let req = makeRequest(path: "/parents/\(pid)/active-trip") else {
+            return ParentActiveTripResult(hasActiveTrip: true, telemetry: LiveTripTelemetryDto(), isOfflineFallback: true)
+        }
+        do {
+            let (data, res) = try await session.data(for: req)
+            if let http = res as? HTTPURLResponse {
+                if http.statusCode == 204 {
+                    return ParentActiveTripResult(hasActiveTrip: false, telemetry: nil, isOfflineFallback: false)
+                }
+                if http.statusCode == 200, !data.isEmpty,
+                   let parsed = try? JSONDecoder().decode(LiveTripTelemetryDto.self, from: data) {
+                    return ParentActiveTripResult(hasActiveTrip: true, telemetry: parsed, isOfflineFallback: false)
+                }
+            }
+        } catch {}
+        return ParentActiveTripResult(hasActiveTrip: true, telemetry: LiveTripTelemetryDto(), isOfflineFallback: true)
+    }
+
+    func getLiveTrips() async -> [LiveTripTelemetryDto] {
+        if isLiveToken(), let req = makeRequest(path: "/trips/live") {
             do {
                 let (data, res) = try await session.data(for: req)
-                if let http = res as? HTTPURLResponse, http.statusCode == 200,
-                   let parsed = try? JSONDecoder().decode(LiveTripTelemetryDto.self, from: data) {
-                    return parsed
+                if let http = res as? HTTPURLResponse, http.statusCode == 200 {
+                    if let list = try? JSONDecoder().decode([LiveTripTelemetryDto].self, from: data) {
+                        return list
+                    }
+                    if let single = try? JSONDecoder().decode(LiveTripTelemetryDto.self, from: data) {
+                        return [single]
+                    }
                 }
             } catch {}
         }
-        return LiveTripTelemetryDto()
+        return [LiveTripTelemetryDto()]
+    }
+
+    func getActiveTrip() async -> LiveTripTelemetryDto {
+        if store.role == .parent {
+            let res = await getParentActiveTrip()
+            return res.telemetry ?? LiveTripTelemetryDto()
+        }
+        let trips = await getLiveTrips()
+        return trips.first ?? LiveTripTelemetryDto()
+    }
+
+    func getDriverActiveTrip() async -> DriverActiveTripResult {
+        guard isLiveToken() else {
+            return DriverActiveTripResult(
+                hasActiveTrip: true, tripId: "TRP-2026-08", routeId: "f0000000-0000-0000-0000-000000000001",
+                routeName: "Ruta San Martín", vehiclePlate: "ABC-123",
+                latitude: -12.0920, longitude: -77.0280, speedKmh: 32.0,
+                stops: [], passengers: [], assignedRoutes: [], isOfflineFallback: true
+            )
+        }
+        var drvId = store.profileId
+        if drvId.isEmpty, let resolved = await resolveProfileId(role: .driver) {
+            drvId = resolved
+            store.setProfileId(resolved)
+        }
+        let allRoutes = await getRoutes()
+        let assigned = drvId.isEmpty ? allRoutes : allRoutes.filter { $0.driverId == drvId }
+        let routesForDriver = assigned.isEmpty ? allRoutes : assigned
+
+        if let req = makeRequest(path: "/trips") {
+            do {
+                let (data, res) = try await session.data(for: req)
+                if let http = res as? HTTPURLResponse, http.statusCode == 200,
+                   let trips = try? JSONDecoder().decode([DriverTripApiDto].self, from: data) {
+                    let active = trips.filter { t in
+                        t.tripState == "IN_PROGRESS" && (drvId.isEmpty || t.driverId == nil || t.driverId == drvId)
+                    }.sorted { ($0.startTime ?? "") > ($1.startTime ?? "") }
+
+                    if let first = active.first {
+                        let matchedRoute = routesForDriver.first(where: { $0.id == first.routeId })
+                            ?? allRoutes.first(where: { $0.id == first.routeId })
+                        let stops = matchedRoute?.stops ?? []
+                        var lat = stops.first?.latitude ?? -12.0920
+                        var lng = stops.first?.longitude ?? -77.0280
+                        var spd = 28.0
+                        if let locReq = makeRequest(path: "/trips/\(first.id)/locations/latest") {
+                            if let (locData, locRes) = try? await session.data(for: locReq),
+                               let locHttp = locRes as? HTTPURLResponse, locHttp.statusCode == 200,
+                               let obj = try? JSONSerialization.jsonObject(with: locData) as? [String: Any] {
+                                lat = (obj["latitude"] as? Double) ?? lat
+                                lng = (obj["longitude"] as? Double) ?? lng
+                                spd = (obj["speedKmh"] as? Double) ?? spd
+                            }
+                        }
+                        return DriverActiveTripResult(
+                            hasActiveTrip: true,
+                            tripId: first.id,
+                            routeId: first.routeId,
+                            routeName: matchedRoute?.name ?? "Ruta Escolar",
+                            vehiclePlate: matchedRoute?.vehiclePlate ?? "ABC-123",
+                            latitude: lat,
+                            longitude: lng,
+                            speedKmh: spd,
+                            stops: stops,
+                            passengers: [],
+                            assignedRoutes: routesForDriver,
+                            isOfflineFallback: false
+                        )
+                    }
+                    return DriverActiveTripResult(
+                        hasActiveTrip: false,
+                        tripId: nil,
+                        routeId: routesForDriver.first?.id,
+                        routeName: routesForDriver.first?.name ?? "Ruta Escolar",
+                        vehiclePlate: routesForDriver.first?.vehiclePlate ?? "ABC-123",
+                        latitude: routesForDriver.first?.stops.first?.latitude ?? -12.0920,
+                        longitude: routesForDriver.first?.stops.first?.longitude ?? -77.0280,
+                        speedKmh: 0,
+                        stops: routesForDriver.first?.stops ?? [],
+                        passengers: [],
+                        assignedRoutes: routesForDriver,
+                        isOfflineFallback: false
+                    )
+                }
+            } catch {}
+        }
+        return DriverActiveTripResult(
+            hasActiveTrip: true, tripId: "TRP-2026-08", routeId: "f0000000-0000-0000-0000-000000000001",
+            routeName: "Ruta San Martín", vehiclePlate: "ABC-123",
+            latitude: -12.0920, longitude: -77.0280, speedKmh: 32.0,
+            stops: [], passengers: [], assignedRoutes: [], isOfflineFallback: true
+        )
+    }
+
+    func startDriverTrip(routeId: String) async -> Bool {
+        var drvId = store.profileId
+        if drvId.isEmpty, let resolved = await resolveProfileId(role: .driver) {
+            drvId = resolved
+            store.setProfileId(resolved)
+        }
+        guard isLiveToken(), !drvId.isEmpty,
+              let createReq = makeRequest(path: "/trips", method: "POST", body: [
+                  "organizationId": store.organizationId,
+                  "routeId": routeId,
+                  "driverId": drvId
+              ]) else { return false }
+        do {
+            let (data, res) = try await session.data(for: createReq)
+            guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tripId = obj["id"] as? String else { return false }
+            if let startReq = makeRequest(path: "/trips/\(tripId)/start", method: "POST") {
+                let (_, startRes) = try await session.data(for: startReq)
+                return (startRes as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } ?? false
+            }
+        } catch {}
+        return false
+    }
+
+    func setBoardingStatus(tripId: String, childId: String, boardingState: String) async {
+        guard isLiveToken(), !tripId.hasPrefix("TRP-"),
+              let req = makeRequest(path: "/trips/\(tripId)/boarding", method: "POST", body: [
+                  "childId": childId,
+                  "boardingState": boardingState
+              ]) else { return }
+        _ = try? await session.data(for: req)
+    }
+
+    func completeTrip(tripId: String) async {
+        guard isLiveToken(), !tripId.hasPrefix("TRP-"),
+              let req = makeRequest(path: "/trips/\(tripId)/complete", method: "POST") else { return }
+        _ = try? await session.data(for: req)
+    }
+
+    // MARK: - Notifications & Stakeholders Parity
+
+    func getNotifications() async -> [SafetyAlertItem] {
+        if !store.userId.isEmpty && store.cacheOwner != store.userId {
+            db.clearUserScopedCaches()
+            AlertCenterStore.shared.setAlerts([])
+            store.setCacheOwner(store.userId)
+        }
+        guard isLiveToken() else {
+            return AlertCenterStore.shared.alerts
+        }
+
+        var query = ""
+        if store.role == .parent {
+            var pid = store.profileId
+            if pid.isEmpty, let resolved = await resolveProfileId(role: .parent) {
+                pid = resolved
+                store.setProfileId(resolved)
+            }
+            if !pid.isEmpty {
+                query = "?parentId=\(pid)"
+            }
+        }
+
+        guard let req = makeRequest(path: "/notifications\(query)") else {
+            return AlertCenterStore.shared.alerts
+        }
+        do {
+            let (data, res) = try await session.data(for: req)
+            if let http = res as? HTTPURLResponse, http.statusCode == 200,
+               let list = try? JSONDecoder().decode([NotificationApiDto].self, from: data) {
+                let items = list.map { Self.mapNotification($0) }
+                    .sorted { ($0.sentAtDate ?? .distantPast) > ($1.sentAtDate ?? .distantPast) }
+                AlertCenterStore.shared.setAlerts(items)
+                return items
+            }
+        } catch {}
+        return AlertCenterStore.shared.alerts
+    }
+
+    func markNotificationsDelivered(_ items: [SafetyAlertItem]) async {
+        guard isLiveToken() else { return }
+        for item in items where item.deliveryState != "DELIVERED" && !item.id.hasPrefix("alt_") {
+            if let req = makeRequest(path: "/notifications/\(item.id)/delivered", method: "POST") {
+                _ = try? await session.data(for: req)
+            }
+        }
+    }
+
+    func getDrivers() async -> [DriverProfileDto] {
+        guard isLiveToken(), let req = makeRequest(path: "/drivers") else { return [] }
+        do {
+            let (data, res) = try await session.data(for: req)
+            if let http = res as? HTTPURLResponse, http.statusCode == 200 {
+                return (try? JSONDecoder().decode([DriverProfileDto].self, from: data)) ?? []
+            }
+        } catch {}
+        return []
+    }
+
+    func getParents() async -> [ParentProfileDto] {
+        guard isLiveToken(), let req = makeRequest(path: "/parents") else { return [] }
+        do {
+            let (data, res) = try await session.data(for: req)
+            if let http = res as? HTTPURLResponse, http.statusCode == 200 {
+                return (try? JSONDecoder().decode([ParentProfileDto].self, from: data)) ?? []
+            }
+        } catch {}
+        return []
+    }
+
+    private static func mapNotification(_ dto: NotificationApiDto) -> SafetyAlertItem {
+        let isEn = AppStrings.shared.currentLanguage == .english
+        let cat = dto.category.uppercased()
+        let lowerMsg = dto.message.lowercased()
+        let title: String
+        if cat == "GEOFENCE_BREACHED" && (lowerMsg.contains("llegada al colegio") || lowerMsg.contains("school arrival")) {
+            title = isEn ? "Arrived at school" : "Llegada al colegio"
+        } else {
+            switch cat {
+            case "PANIC", "PANIC_ALERT":
+                title = isEn ? "Panic alert!" : "¡Alerta de pánico!"
+            case "TRIP_STARTED":
+                title = isEn ? "Trip started" : "Viaje iniciado"
+            case "GEOFENCE_BREACHED":
+                title = isEn ? "Vehicle approaching" : "El vehículo está cerca"
+            case "ARRIVED":
+                title = isEn ? "Arrived at school" : "Llegada al colegio"
+            case "STUDENT_BOARDED", "BOARDING":
+                title = isEn ? "Student boarded" : "Estudiante a bordo"
+            case "INCIDENT_REPORTED", "TRAFFIC":
+                title = isEn ? "Route incident" : "Incidencia en el viaje"
+            case "ANNOUNCEMENT":
+                title = isEn ? "Driver announcement" : "Aviso del conductor"
+            default:
+                title = isEn ? "Notification" : "Notificación"
+            }
+        }
+
+        let isoFrac = ISO8601DateFormatter()
+        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoStd = ISO8601DateFormatter()
+        let parsedDate = dto.sentAt.flatMap { isoFrac.date(from: $0) ?? isoStd.date(from: $0) }
+        let tsLabel: String
+        if let parsedDate {
+            let diffMins = Int(Date().timeIntervalSince(parsedDate) / 60)
+            if diffMins >= 0 && diffMins < 1 {
+                tsLabel = isEn ? "Now" : "Ahora"
+            } else if diffMins >= 1 && diffMins < 60 {
+                tsLabel = isEn ? "\(diffMins)m ago" : "Hace \(diffMins) min"
+            } else {
+                let df = DateFormatter()
+                df.dateFormat = Calendar.current.isDateInToday(parsedDate) ? (isEn ? "'Today,' HH:mm" : "'Hoy,' HH:mm") : "dd/MM/yyyy · HH:mm"
+                tsLabel = df.string(from: parsedDate)
+            }
+        } else {
+            tsLabel = isEn ? "Today" : "Hoy"
+        }
+
+        let panicFlag = dto.alerts?.contains(where: { $0.panic == true }) == true
+        return SafetyAlertItem(
+            id: dto.id,
+            title: title,
+            message: dto.message,
+            type: cat,
+            timestamp: tsLabel,
+            tripId: dto.tripId,
+            deliveryState: dto.deliveryState,
+            hasPanicAlert: panicFlag,
+            sentAtDate: parsedDate
+        )
     }
 
     func getPrimaryVehicleDocs() async -> VehicleDto {

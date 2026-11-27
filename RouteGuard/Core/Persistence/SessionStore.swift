@@ -27,6 +27,8 @@ final class SessionStore {
         static let email = "rg_email"
         static let role = "rg_role"
         static let orgId = "rg_org_id"
+        static let profileId = "rg_profile_id"
+        static let cacheOwner = "rg_cache_owner"
         static let darkMode = "rg_dark_mode"
         static let tutorialPrefix = "rg_tutorial_seen_"
     }
@@ -37,6 +39,8 @@ final class SessionStore {
     var email: String = ""
     var role: UserRole = .parent
     var organizationId: String = "org_school_01"
+    var profileId: String = ""
+    var cacheOwner: String = ""
     var isDarkMode: Bool = false
 
     var isAuthenticated: Bool { !token.isEmpty }
@@ -55,16 +59,19 @@ final class SessionStore {
         email = defaults.string(forKey: Keys.email) ?? ""
         role = UserRole.normalize(defaults.string(forKey: Keys.role))
         organizationId = defaults.string(forKey: Keys.orgId) ?? "org_school_01"
+        profileId = defaults.string(forKey: Keys.profileId) ?? ""
+        cacheOwner = defaults.string(forKey: Keys.cacheOwner) ?? ""
         isDarkMode = defaults.bool(forKey: Keys.darkMode)
     }
 
-    func saveSession(token: String, userId: String, fullName: String, email: String, role: UserRole, organizationId: String) {
+    func saveSession(token: String, userId: String, fullName: String, email: String, role: UserRole, organizationId: String, profileId: String = "") {
         self.token = token
         self.userId = userId
         self.fullName = fullName
         self.email = email
         self.role = role
         self.organizationId = organizationId
+        self.profileId = profileId
 
         defaults.set(token, forKey: Keys.token)
         defaults.set(userId, forKey: Keys.userId)
@@ -72,6 +79,25 @@ final class SessionStore {
         defaults.set(email, forKey: Keys.email)
         defaults.set(role.rawValue, forKey: Keys.role)
         defaults.set(organizationId, forKey: Keys.orgId)
+        if profileId.isEmpty {
+            defaults.removeObject(forKey: Keys.profileId)
+        } else {
+            defaults.set(profileId, forKey: Keys.profileId)
+        }
+    }
+
+    func setProfileId(_ value: String) {
+        profileId = value
+        if value.isEmpty {
+            defaults.removeObject(forKey: Keys.profileId)
+        } else {
+            defaults.set(value, forKey: Keys.profileId)
+        }
+    }
+
+    func setCacheOwner(_ value: String) {
+        cacheOwner = value
+        defaults.set(value, forKey: Keys.cacheOwner)
     }
 
     func switchRole(_ newRole: UserRole) {
@@ -99,7 +125,8 @@ final class SessionStore {
         email = ""
         role = .parent
         organizationId = "org_school_01"
-        [Keys.token, Keys.userId, Keys.fullName, Keys.email, Keys.role, Keys.orgId].forEach {
+        profileId = ""
+        [Keys.token, Keys.userId, Keys.fullName, Keys.email, Keys.role, Keys.orgId, Keys.profileId].forEach {
             defaults.removeObject(forKey: $0)
         }
     }

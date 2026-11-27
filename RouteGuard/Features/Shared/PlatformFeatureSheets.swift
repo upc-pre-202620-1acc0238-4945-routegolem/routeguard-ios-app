@@ -35,6 +35,7 @@ struct VehicleDocsSheet: View {
                 }
             }
             .navigationTitle(AppStrings.tr("docs_dialog_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(AppStrings.tr("common_close")) { dismiss() }
@@ -89,6 +90,7 @@ struct TripHistorySheet: View {
                 }
             }
             .navigationTitle(AppStrings.tr("history_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(AppStrings.tr("common_close")) { dismiss() }
@@ -117,6 +119,7 @@ struct TripHistorySheet: View {
                         }
                     }
                     .navigationTitle(AppStrings.tr("rate_title"))
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button(AppStrings.tr("common_cancel")) { ratingTarget = nil }
@@ -174,6 +177,7 @@ struct AnnouncementsSheet: View {
                 }
             }
             .navigationTitle(AppStrings.tr("announcements_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(AppStrings.tr("common_close")) { dismiss() }
@@ -252,6 +256,7 @@ struct PickupAndOptSheet: View {
                 }
             }
             .navigationTitle(AppStrings.tr("pickup_opt_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(AppStrings.tr("common_close")) { dismiss() }
@@ -309,6 +314,7 @@ struct InternalChatSheet: View {
                 .padding()
             }
             .navigationTitle(AppStrings.tr("chat_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(AppStrings.tr("common_close")) { dismiss() }
@@ -359,6 +365,7 @@ struct MaintenanceSheet: View {
                 }
             }
             .navigationTitle(AppStrings.tr("maintenances_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(AppStrings.tr("common_close")) { dismiss() }
@@ -414,6 +421,7 @@ struct ExpensesSheet: View {
                 }
             }
             .navigationTitle(AppStrings.tr("expenses_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(AppStrings.tr("common_close")) { dismiss() }
@@ -452,6 +460,7 @@ struct SubscriptionPlansSheet: View {
                 }
             }
             .navigationTitle(AppStrings.tr("sub_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(AppStrings.tr("common_close")) { dismiss() }

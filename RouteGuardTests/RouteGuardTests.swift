@@ -122,4 +122,50 @@ final class RouteGuardTests: XCTestCase {
         let chat = await repo.getChatMessages()
         XCTAssertEqual(chat.count, 1)
     }
+
+    @MainActor
+    func testRouteSummaryDecodesNestedVehiclePlateAndParentScopedParity() async throws {
+        let routeJson = """
+        {"id":"r2","name":"Ruta Miraflores - Turno Tarde","state":"ACTIVE","vehicle":{"licensePlate":"DEF-456"},"stops":[{"id":"s1","name":"Óvalo Gutiérrez","latitude":-12.11,"longitude":-77.03,"order":1},{"id":"s2","name":"Colegio","latitude":-12.12,"longitude":-77.04,"order":2}]}
+        """
+        let decodedRoute = try JSONDecoder().decode(RouteSummaryItem.self, from: Data(routeJson.utf8))
+        XCTAssertEqual(decodedRoute.vehiclePlate, "DEF-456")
+        XCTAssertEqual(decodedRoute.stopsCount, 2)
+        XCTAssertEqual(decodedRoute.stops.count, 2)
+
+        let db = LocalDatabase(inMemory: true)
+        let suiteName = "RouteGuardParityTest_\(UUID().uuidString)"
+        let store = SessionStore(defaults: UserDefaults(suiteName: suiteName)!)
+        store.saveSession(token: "jwt_live_1", userId: "u_jorge", fullName: "Jorge Salas", email: "jorge.salas@gmail.com", role: .parent, organizationId: "org_1", profileId: "par_jorge")
+
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MockURLProtocol.self]
+        let mockSession = URLSession(configuration: cfg)
+        var capturedNotifQuery: String?
+
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            if url.path.contains("/parents/par_jorge/active-trip") {
+                return (HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil)!, Data())
+            }
+            if url.path.hasSuffix("/notifications") {
+                capturedNotifQuery = url.query
+                let json = """
+                [{"id":"n1","tripId":"t1","category":"TRIP_STARTED","deliveryState":"Delivered","message":"Viaje iniciado hacia Miraflores","sentAt":"2026-11-27T07:05:00Z","alerts":[]}]
+                """
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(json.utf8))
+            }
+            return (HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: nil)!, Data())
+        }
+
+        let repo = RouteGuardRepository(urlSession: mockSession, database: db, sessionStore: store)
+        let parentTrip = await repo.getParentActiveTrip()
+        XCTAssertFalse(parentTrip.isOfflineFallback)
+        XCTAssertFalse(parentTrip.hasActiveTrip)
+
+        let alerts = await repo.getNotifications()
+        XCTAssertEqual(capturedNotifQuery, "parentId=par_jorge")
+        XCTAssertEqual(alerts.count, 1)
+        XCTAssertEqual(alerts.first?.type, "TRIP_STARTED")
+    }
 }

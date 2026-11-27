@@ -6,7 +6,7 @@ import SwiftUI
 final class AlertCenterStore {
     static let shared = AlertCenterStore()
 
-    var alerts: [SafetyAlertItem] = [
+    private static let defaultAlerts: [SafetyAlertItem] = [
         SafetyAlertItem(
             id: "alt_01",
             title: "Estudiante a bordo",
@@ -22,6 +22,16 @@ final class AlertCenterStore {
             timestamp: "07:40 AM"
         )
     ]
+
+    var alerts: [SafetyAlertItem] = AlertCenterStore.defaultAlerts
+
+    func setAlerts(_ newAlerts: [SafetyAlertItem]) {
+        alerts = newAlerts
+    }
+
+    func resetDefaults() {
+        alerts = Self.defaultAlerts
+    }
 
     func add(title: String, message: String, type: String) {
         let fmt = DateFormatter()
