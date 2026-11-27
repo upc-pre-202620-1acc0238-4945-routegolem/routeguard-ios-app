@@ -20,9 +20,7 @@ targets:
       base:
         INFOPLIST_FILE: RouteGuard/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: pe.edu.upc.routeguard.ios
-        DEVELOPMENT_TEAM: ""
-        CODE_SIGNING_ALLOWED: "NO"
-        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: "-"
   RouteGuardTests:
     type: bundle.unit-test
     platform: iOS
@@ -34,6 +32,7 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: "YES"
         PRODUCT_BUNDLE_IDENTIFIER: pe.edu.upc.routeguard.ios.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RouteGuard.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/RouteGuard"
   RouteGuardUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -45,6 +44,7 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: "YES"
         PRODUCT_BUNDLE_IDENTIFIER: pe.edu.upc.routeguard.ios.uitests
+        TEST_TARGET_NAME: RouteGuard
 schemes:
   RouteGuard:
     build:

@@ -33,11 +33,16 @@ jobs:
 
       - name: Run XCTest & XCUITest (with Simulator Screenshots)
         run: |
+          set -o pipefail
+          mkdir -p artifacts
           xcodebuild test \
             -project RouteGuard.xcodeproj \
             -scheme RouteGuard \
+            -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.SIM_ID }}" \
-            -resultBundlePath TestResults.xcresult
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO \
+            | tee artifacts/xcodebuild-test.log || (grep -E "error:|Testing failed" artifacts/xcodebuild-test.log | head -n 40 | while IFS= read -r line; do echo "::error::$line"; done; exit 1)
 
       - name: Build Simulator App Artifact
         run: |
@@ -46,7 +51,8 @@ jobs:
             -scheme RouteGuard \
             -sdk iphonesimulator \
             -configuration Debug \
-            -derivedDataPath DerivedData
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO
 
       - name: Export Simulator Screenshots & .app
         if: always()
@@ -57,6 +63,7 @@ jobs:
           find ~/Library/Developer -name "*.png" -exec cp {} artifacts/screenshots/ \; || true
 
       - name: Upload iOS Simulator Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: routeguard-ios-simulator-build
