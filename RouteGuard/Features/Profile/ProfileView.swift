@@ -196,6 +196,7 @@ struct ProfileView: View {
                         }
                     }
                     .navigationTitle(AppStrings.tr("profile_caregiver_add"))
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) { Button(AppStrings.tr("common_cancel")) { showAddCaregiver = false } }
                     }
@@ -220,6 +221,7 @@ struct ProfileView: View {
                         }
                     }
                     .navigationTitle(AppStrings.tr("profile_ticket_btn"))
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) { Button(AppStrings.tr("common_cancel")) { showSupportTicket = false } }
                     }
@@ -253,6 +255,7 @@ private struct FaqHelpSheet: View {
                 }
             }
             .navigationTitle(AppStrings.tr("profile_faq_btn"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button(AppStrings.tr("common_close")) { dismiss() } }
             }

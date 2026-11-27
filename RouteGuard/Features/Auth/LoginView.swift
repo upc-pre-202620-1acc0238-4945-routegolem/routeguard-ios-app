@@ -178,13 +178,20 @@ struct LoginView: View {
         defer { isLoading = false }
         do {
             let account = try await RouteGuardRepository.shared.signIn(email: email, password: password)
+            let prevOwner = SessionStore.shared.cacheOwner
+            if !prevOwner.isEmpty && prevOwner != account.id {
+                LocalDatabase.shared.clearUserScopedCaches()
+                AlertCenterStore.shared.setAlerts([])
+            }
+            SessionStore.shared.setCacheOwner(account.id)
             SessionStore.shared.saveSession(
                 token: account.token,
                 userId: account.id,
                 fullName: account.fullName,
                 email: account.email,
                 role: UserRole.normalize(account.role),
-                organizationId: account.organizationId
+                organizationId: account.organizationId,
+                profileId: account.profileId ?? ""
             )
             if let lang = account.preferredLanguage, !lang.isEmpty {
                 AppStrings.shared.setLanguage(lang.lowercased().hasPrefix("en") ? .english : .spanish)
@@ -271,6 +278,7 @@ struct ForgotPasswordSheet: View {
                 }
             }
             .navigationTitle(AppStrings.tr("login_forgot_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(AppStrings.tr("common_close")) { dismiss() }
@@ -316,6 +324,7 @@ struct RegisterAccountSheet: View {
                 .foregroundStyle(AppTheme.primaryNavy)
             }
             .navigationTitle(AppStrings.tr("login_register_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(AppStrings.tr("common_cancel")) { dismiss() }

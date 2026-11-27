@@ -35,4 +35,13 @@ final class LocalDatabase {
     func save() {
         try? context.save()
     }
+
+    func clearUserScopedCaches() {
+        ((try? context.fetch(FetchDescriptor<CachedCaregiverEntity>())) ?? []).forEach { context.delete($0) }
+        ((try? context.fetch(FetchDescriptor<CachedSupportTicketEntity>())) ?? []).forEach { context.delete($0) }
+        ((try? context.fetch(FetchDescriptor<CachedAbsenceEntity>())) ?? []).forEach { context.delete($0) }
+        ((try? context.fetch(FetchDescriptor<CachedTripHistoryEntity>())) ?? []).forEach { context.delete($0) }
+        ((try? context.fetch(FetchDescriptor<CachedChatMessageEntity>())) ?? []).forEach { context.delete($0) }
+        save()
+    }
 }

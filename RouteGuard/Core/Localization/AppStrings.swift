@@ -189,7 +189,17 @@ final class AppStrings {
             "profile_subscription_btn": "Planes de Suscripción",
             "profile_sign_out": "Cerrar sesión",
             "profile_sign_out_msg": "¿Seguro que deseas cerrar tu sesión en RouteGuard?",
-            "sub_title": "Planes y Suscripción"
+            "sub_title": "Planes y Suscripción",
+            "tracking_no_trip_title": "Sin viaje en curso",
+            "tracking_no_trip_subtitle": "Cuando la unidad que traslada a tus hijos inicie el recorrido, verás aquí su ubicación y paradas en vivo.",
+            "alerts_filter_all": "Todas",
+            "alerts_filter_priority": "Prioridad",
+            "alerts_filter_trip": "Viaje",
+            "alerts_filter_notices": "Avisos",
+            "alerts_empty": "Sin notificaciones para esta cuenta.",
+            "driver_pick_route": "Selecciona una ruta para iniciar",
+            "driver_start_trip": "Iniciar Recorrido",
+            "driver_finish_trip": "Finalizar Recorrido"
         ],
         .english: [
             "app_title": "RouteGuard",
@@ -331,7 +341,17 @@ final class AppStrings {
             "profile_subscription_btn": "Subscription Plans",
             "profile_sign_out": "Sign Out",
             "profile_sign_out_msg": "Are you sure you want to sign out from RouteGuard?",
-            "sub_title": "Subscription Plans"
+            "sub_title": "Subscription Plans",
+            "tracking_no_trip_title": "No trip in progress",
+            "tracking_no_trip_subtitle": "When the vehicle carrying your children starts its route, you will see its live location and stops here.",
+            "alerts_filter_all": "All",
+            "alerts_filter_priority": "Priority",
+            "alerts_filter_trip": "Trip",
+            "alerts_filter_notices": "Notices",
+            "alerts_empty": "No notifications for this account.",
+            "driver_pick_route": "Select a route to start",
+            "driver_start_trip": "Start Trip",
+            "driver_finish_trip": "Finish Trip"
         ]
     ]
 }

@@ -26,29 +26,62 @@ struct ParentTrackingView: View {
     @State private var showPanicAlert = false
     @State private var panicDispatched = false
 
+    @State private var hasActiveTrip = true
+    @State private var isLoadingTrip = false
+    @State private var roadCoords: [CLLocationCoordinate2D] = []
     @State private var activeAbsenceBanner: String?
     @State private var submittedRating: Int?
-
-    private let routeCoords = [
-        CLLocationCoordinate2D(latitude: -12.0870, longitude: -77.0350),
-        CLLocationCoordinate2D(latitude: -12.0920, longitude: -77.0280),
-        CLLocationCoordinate2D(latitude: -12.0980, longitude: -77.0200),
-        CLLocationCoordinate2D(latitude: -12.1040, longitude: -77.0150)
-    ]
 
     var body: some View {
         let _ = strings.currentLanguage
         NavigationStack {
             ScrollView {
+                if !hasActiveTrip && !isLoadingTrip {
+                    VStack(spacing: 14) {
+                        Image(systemName: "bus")
+                            .font(.system(size: 48))
+                            .foregroundStyle(AppTheme.primaryNavy)
+                            .padding(.top, 40)
+                        Text(AppStrings.tr("tracking_no_trip_title"))
+                            .font(.headline)
+                            .foregroundStyle(AppTheme.primaryNavy)
+                        Text(AppStrings.tr("tracking_no_trip_subtitle"))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                        Button {
+                            Task { await loadParentTrip() }
+                        } label: {
+                            Label(AppStrings.tr("common_loading").replacingOccurrences(of: "…", with: ""), systemImage: "arrow.clockwise")
+                                .font(.caption.bold())
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                } else {
                 VStack(spacing: 14) {
                     // Map preview
                     Map(position: $cameraPosition) {
+                        if roadCoords.count >= 2 {
+                            MapPolyline(coordinates: roadCoords)
+                                .stroke(AppTheme.primaryNavy, lineWidth: 4.5)
+                        }
+                        ForEach(telemetry.stops) { stop in
+                            let isSchool = stop.name.localizedCaseInsensitiveContains("colegio")
+                                || stop.name.localizedCaseInsensitiveContains("school")
+                            Marker(
+                                stop.name,
+                                systemImage: isSchool ? "building.columns.fill" : (stop.isReached ? "checkmark.circle.fill" : "mappin.circle.fill"),
+                                coordinate: CLLocationCoordinate2D(latitude: stop.latitude, longitude: stop.longitude)
+                            )
+                            .tint(isSchool ? AppTheme.errorRed : (stop.isReached ? AppTheme.emerald : AppTheme.warningAmber))
+                        }
                         Marker(telemetry.vehiclePlate, systemImage: "bus.fill", coordinate: CLLocationCoordinate2D(latitude: telemetry.latitude, longitude: telemetry.longitude))
                             .tint(AppTheme.primaryNavy)
-                        MapPolyline(coordinates: routeCoords)
-                            .stroke(AppTheme.primaryNavy, lineWidth: 4)
                     }
-                    .frame(height: 220)
+                    .frame(height: 230)
                     .clipShape(RoundedRectangle(cornerRadius: 18))
 
                     // Telemetry status banner
@@ -93,7 +126,8 @@ struct ParentTrackingView: View {
                             }
                             Spacer()
                             Button {
-                                if let tel = URL(string: "tel:+51987654321") {
+                                let rawPhone = (telemetry.driverPhone ?? "+51987654321").filter { $0.isNumber || $0 == "+" }
+                                if let tel = URL(string: "tel:\(rawPhone)") {
                                     openURL(tel)
                                 }
                             } label: {
@@ -164,18 +198,12 @@ struct ParentTrackingView: View {
                     }
                 }
                 .padding()
+                }
             }
+            .refreshable { await loadParentTrip() }
             .navigationTitle(AppStrings.tr("tracking_title"))
-            .task {
-                telemetry = await RouteGuardRepository.shared.getActiveTrip()
-                vehicleDocs = await RouteGuardRepository.shared.getPrimaryVehicleDocs()
-                cameraPosition = .region(
-                    MKCoordinateRegion(
-                        center: CLLocationCoordinate2D(latitude: telemetry.latitude, longitude: telemetry.longitude),
-                        span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
-                    )
-                )
-            }
+            .navigationBarTitleDisplayMode(.inline)
+            .task { await loadParentTrip() }
             .alert(AppStrings.tr("tracking_panic_title"), isPresented: $showPanicAlert) {
                 Button(AppStrings.tr("common_cancel"), role: .cancel) {}
                 Button(AppStrings.tr("tracking_panic_confirm"), role: .destructive) {
@@ -202,7 +230,10 @@ struct ParentTrackingView: View {
                 TripHistorySheet { stars in submittedRating = stars }
             }
             .sheet(isPresented: $showAbsenceSheet) {
-                ParentAbsenceSheet(tripId: telemetry.tripId) { child in
+                ParentAbsenceSheet(
+                    tripId: telemetry.tripId,
+                    childOptions: telemetry.children.isEmpty ? ["Mateo Nery", "Luciana Nery"] : telemetry.children.map(\.name)
+                ) { child in
                     activeAbsenceBanner = child
                 }
             }
@@ -215,12 +246,46 @@ struct ParentTrackingView: View {
                 AnnouncementsSheet(canPublish: false)
             }
             .sheet(isPresented: $showPickupSheet) {
-                PickupAndOptSheet(canRequest: true, canApprove: false, routeId: "f0000000-0000-0000-0000-000000000001")
+                PickupAndOptSheet(canRequest: true, canApprove: false, routeId: telemetry.routeId ?? "f0000000-0000-0000-0000-000000000001")
             }
             .sheet(isPresented: $showChatSheet) {
                 InternalChatSheet()
             }
         }
+    }
+
+    private func loadParentTrip() async {
+        isLoadingTrip = true
+        let res = await RouteGuardRepository.shared.getParentActiveTrip()
+        hasActiveTrip = res.hasActiveTrip
+        if let active = res.telemetry {
+            telemetry = active
+            let stopCoords = active.stops.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+            if stopCoords.count >= 2 {
+                roadCoords = await RoadRoutingHelper.fetchRoadCoordinates(for: stopCoords)
+            } else {
+                roadCoords = []
+            }
+            let pts = stopCoords + [CLLocationCoordinate2D(latitude: active.latitude, longitude: active.longitude)]
+            if let region = Self.regionFitting(pts) {
+                cameraPosition = .region(region)
+            }
+        }
+        vehicleDocs = await RouteGuardRepository.shared.getPrimaryVehicleDocs()
+        isLoadingTrip = false
+    }
+
+    private static func regionFitting(_ coords: [CLLocationCoordinate2D]) -> MKCoordinateRegion? {
+        guard let first = coords.first else { return nil }
+        var minLat = first.latitude, maxLat = first.latitude
+        var minLng = first.longitude, maxLng = first.longitude
+        for c in coords {
+            minLat = min(minLat, c.latitude); maxLat = max(maxLat, c.latitude)
+            minLng = min(minLng, c.longitude); maxLng = max(maxLng, c.longitude)
+        }
+        let center = CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLng + maxLng) / 2)
+        let span = MKCoordinateSpan(latitudeDelta: max(0.025, (maxLat - minLat) * 1.45), longitudeDelta: max(0.025, (maxLng - minLng) * 1.45))
+        return MKCoordinateRegion(center: center, span: span)
     }
 
     private func actionButton(_ label: String, icon: String, action: @escaping () -> Void) -> some View {
@@ -242,8 +307,9 @@ struct ParentTrackingView: View {
 private struct ParentAbsenceSheet: View {
     @Environment(\.dismiss) private var dismiss
     let tripId: String
+    let childOptions: [String]
     let onSaved: (String) -> Void
-    @State private var selectedChild = "Mateo Nery"
+    @State private var selectedChild = ""
     @State private var reason = "Cita médica"
     @State private var notes = ""
 
@@ -251,8 +317,9 @@ private struct ParentAbsenceSheet: View {
         NavigationStack {
             Form {
                 Picker(AppStrings.tr("absence_child_label"), selection: $selectedChild) {
-                    Text("Mateo Nery").tag("Mateo Nery")
-                    Text("Luciana Nery").tag("Luciana Nery")
+                    ForEach(childOptions, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
                 }
                 Picker(AppStrings.tr("absence_reason_label"), selection: $reason) {
                     Text("Cita médica").tag("Cita médica")
@@ -261,15 +328,20 @@ private struct ParentAbsenceSheet: View {
                 }
                 TextField(AppStrings.tr("absence_notes_label"), text: $notes)
                 Button(AppStrings.tr("absence_confirm_btn")) {
+                    let chosen = selectedChild.isEmpty ? (childOptions.first ?? "Estudiante") : selectedChild
                     Task {
-                        await RouteGuardRepository.shared.reportAbsence(childName: selectedChild, reason: reason, notes: notes)
-                        AlertCenterStore.shared.add(title: "Ausencia Temprana", message: "\(selectedChild) no abordará hoy (\(reason)).", type: "INFO")
-                        onSaved(selectedChild)
+                        await RouteGuardRepository.shared.reportAbsence(childName: chosen, reason: reason, notes: notes)
+                        AlertCenterStore.shared.add(title: "Ausencia Temprana", message: "\(chosen) no abordará hoy (\(reason)).", type: "INFO")
+                        onSaved(chosen)
                         dismiss()
                     }
                 }
             }
+            .onAppear {
+                if selectedChild.isEmpty { selectedChild = childOptions.first ?? "Mateo Nery" }
+            }
             .navigationTitle(AppStrings.tr("absence_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button(AppStrings.tr("common_cancel")) { dismiss() } }
             }
@@ -301,6 +373,7 @@ private struct ParentRateSheet: View {
                 }
             }
             .navigationTitle(AppStrings.tr("rate_title"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button(AppStrings.tr("common_cancel")) { dismiss() } }
             }
